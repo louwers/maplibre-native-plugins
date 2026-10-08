@@ -105,6 +105,10 @@ def generate(root, check):
         (root / path).write_text(files[path])
     for path in leftovers:
         (root / path).unlink()
+    # SwiftPM rejects an include directory with a second (even empty) product directory.
+    for directory in sorted((p for p in generated_root.rglob("*") if p.is_dir()), reverse=True):
+        if not any(directory.iterdir()):
+            directory.rmdir()
     return stale + leftovers
 
 
