@@ -21,7 +21,7 @@ runs:
         TOOLS: ${{ github.action_path }}/../..
       run: |
         version="$("$TOOLS/bin/plugin" config version)"
-        name="$("$TOOLS/bin/plugin" config displayName)"
+        id="$("$TOOLS/bin/plugin" config id)"
         if gh release view "$version" > /dev/null 2>&1; then
           echo "::error::Release $version already exists. Bump version in plugin.json, run tools/bin/plugin generate, and commit."
           exit 1
@@ -34,8 +34,36 @@ runs:
           [[ $(basename "$file") == *"-$version."* ]] || { echo "::error::$file does not match version $version"; exit 1; }
         done
         (cd "$ASSETS" && for file in *; do [[ $file == *.sha256 ]] || shasum -a 256 "$file" > "$file.sha256"; done)
+        # Usage instructions first; GitHub appends the generated list of changes.
+        "$TOOLS/bin/plugin" release-notes > "$RUNNER_TEMP/release-notes.md"
         gh release create "$version" "$ASSETS"/* \
           --target "$GITHUB_SHA" \
-          --title "$name $version" \
+          --title "$id-$version" \
+          --notes-file "$RUNNER_TEMP/release-notes.md" \
           --generate-notes \
           $([[ $version == *-* ]] && echo --prerelease)
+
+    # JitPack builds on first request. Request the release now so users don't wait, and so a
+    # broken JitPack build fails the release workflow.
+    - name: Build on JitPack
+      shell: bash
+      env:
+        REPOSITORY: ${{ github.repository }}
+        TOOLS: ${{ github.action_path }}/../..
+      run: |
+        version="$("$TOOLS/bin/plugin" config version)"
+        owner="${REPOSITORY%%/*}" name="${REPOSITORY#*/}"
+        pom="https://jitpack.io/com/github/$owner/$name/$version/$name-$version.pom"
+        log="https://jitpack.io/com/github/$owner/$name/$version/build.log"
+        for attempt in $(seq 1 40); do
+          status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 600 "$pom" || true)"
+          [[ $status == 200 ]] && { echo "Published com.github.$owner:$name:$version on JitPack"; exit 0; }
+          if [[ $status != 000 && $status != 401 && $status != 404 ]] || curl -sf "$log" | grep -q "BUILD FAILED\|Build tool exit code: [1-9]"; then
+            break
+          fi
+          echo "JitPack status $status, waiting ($attempt/40)"
+          sleep 30
+        done
+        echo "::error::JitPack did not publish $version. Build log: $log"
+        curl -sf "$log" | tail -40 || true
+        exit 1

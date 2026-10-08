@@ -1,0 +1,24 @@
+#!/bin/bash
+# Summary: Build and publish the Android library on JitPack (called by jitpack.yml)
+#
+# JitPack sets GROUP (com.github.<owner>), ARTIFACT (the repository name) and VERSION (the tag),
+# then collects what this publishes to the local Maven repository.
+set -euo pipefail
+: "${GROUP:?Run on JitPack, which sets GROUP, ARTIFACT and VERSION}"
+: "${ARTIFACT:?JitPack sets ARTIFACT}"
+: "${VERSION:?JitPack sets VERSION}"
+
+plugin="$MLN_PLUGIN_TOOLS/bin/plugin"
+version="$("$plugin" config version)"
+if [[ $VERSION != "$version" ]]; then
+    echo "error: JitPack builds $VERSION, but plugin.json has version $version. Request a release tag." >&2
+    exit 1
+fi
+
+# shellcheck source=/dev/null
+source "$MLN_PLUGIN_TOOLS/lib/android.sh"
+
+ndk="$("$plugin" config versions.androidNdk)"
+sdkmanager="$(command -v sdkmanager || echo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager")"
+(yes || true) | "$sdkmanager" "ndk;$ndk" "cmake;3.22.1" > /dev/null
+plugin_gradle :publishToMavenLocal -PmlnPublishGroupId="$GROUP" -PmlnPublishArtifactId="$ARTIFACT"

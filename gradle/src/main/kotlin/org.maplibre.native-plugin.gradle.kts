@@ -113,11 +113,13 @@ dependencies {
     compileOnly("org.maplibre.gl:android-sdk-opengl:${pluginConfig.string("versions.maplibreAndroid")}")
 }
 
+// JitPack publishes under its own coordinates (com.github.<owner>:<repository>), passed by
+// `tools/bin/plugin jitpack` as -PmlnPublishGroupId and -PmlnPublishArtifactId.
 publishing {
     publications {
         register<MavenPublication>("release") {
-            groupId = pluginConfig.string("android.groupId")
-            artifactId = pluginConfig.string("android.artifactId")
+            groupId = providers.gradleProperty("mlnPublishGroupId").orNull ?: pluginConfig.string("android.groupId")
+            artifactId = providers.gradleProperty("mlnPublishArtifactId").orNull ?: pluginConfig.string("android.artifactId")
             version = pluginVersion
             afterEvaluate { from(components["release"]) }
             pom {

@@ -45,6 +45,7 @@ managed workflows/ci.yml .github/workflows/ci.yml
 managed workflows/release.yml .github/workflows/release.yml
 managed android/settings.gradle.kts settings.gradle.kts
 managed android/build.gradle.kts build.gradle.kts
+managed common/jitpack.yml jitpack.yml
 initial common/gitignore .gitignore
 
 if $check; then

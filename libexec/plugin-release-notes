@@ -1,0 +1,4 @@
+#!/bin/bash
+# Summary: Print the release notes with usage instructions for the version in plugin.json
+set -euo pipefail
+exec python3 "$MLN_PLUGIN_TOOLS/lib/release_notes.py" "$@"
