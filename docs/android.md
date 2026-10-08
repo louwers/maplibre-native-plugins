@@ -56,7 +56,7 @@ The Android SDK is found through `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `local.prop
 ## GitHub Actions
 
 ```yaml
-- uses: actions/checkout@v4
+- uses: actions/checkout@v7
   with:
     submodules: recursive
 - uses: ./tools/actions/android

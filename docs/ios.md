@@ -86,7 +86,7 @@ exits. It fails when registration or style loading fails.
 ## GitHub Actions
 
 ```yaml
-- uses: actions/checkout@v4
+- uses: actions/checkout@v7
   with:
     submodules: recursive
 - uses: ./tools/actions/ios

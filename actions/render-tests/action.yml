@@ -41,7 +41,7 @@ runs:
     # The MapLibre Native checkout (about 1.6 GB with submodules) is fetched shallowly on every
     # run; caching it would evict the far more useful compiler cache.
     - name: Restore compiler cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ${{ runner.temp }}/ccache
         key: plugin-render-tests-ccache-${{ runner.os }}-${{ inputs.backend }}-${{ steps.config.outputs.native-revision }}-${{ github.run_id }}
@@ -83,7 +83,7 @@ runs:
 
     - name: Upload render-test diagnostics
       if: failure()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: render-tests-${{ steps.config.outputs.plugin-id }}-${{ inputs.backend }}
         path: |

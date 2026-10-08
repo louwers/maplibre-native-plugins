@@ -15,7 +15,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-java@v4
+    - uses: actions/setup-java@v6
       with:
         distribution: temurin
         java-version: 17
@@ -28,7 +28,7 @@ runs:
         ndk="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["androidNdk"])' "$GITHUB_ACTION_PATH/../../versions.json")"
         sdkmanager "ndk;$ndk" "cmake;3.22.1"
 
-    - uses: gradle/actions/setup-gradle@v4
+    - uses: gradle/actions/setup-gradle@v6
 
     - name: Build AAR
       id: build
