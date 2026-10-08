@@ -1,0 +1,41 @@
+#!/bin/bash
+# Entry point of maplibre-native-plugins. Run from anywhere inside a plugin repository:
+#   tools/bin/plugin <command> [arguments]
+# Each command is implemented by libexec/plugin-<command>.
+set -euo pipefail
+
+tools_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export MLN_PLUGIN_TOOLS="$tools_root"
+
+usage() {
+    echo "Usage: tools/bin/plugin <command> [arguments]" >&2
+    echo >&2
+    echo "Commands:" >&2
+    for command in "$tools_root"/libexec/plugin-*; do
+        name="${command##*/plugin-}"
+        summary="$(sed -n 's/^# Summary: //p' "$command" | head -1)"
+        printf '  %-18s %s\n' "$name" "$summary" >&2
+    done
+    exit 2
+}
+
+[[ $# -ge 1 ]] || usage
+command="$1"
+shift
+[[ $command == -h || $command == --help || $command == help ]] && usage
+implementation="$tools_root/libexec/plugin-$command"
+[[ -x $implementation ]] || { echo "Unknown command: $command" >&2; usage; }
+
+# The plugin repository is the nearest ancestor of the working directory with a plugin.json,
+# unless MLN_PLUGIN_ROOT is set.
+if [[ -z ${MLN_PLUGIN_ROOT:-} ]]; then
+    directory="$PWD"
+    while [[ $directory != / && ! -f $directory/plugin.json ]]; do
+        directory="$(dirname "$directory")"
+    done
+    [[ -f $directory/plugin.json ]] || { echo "No plugin.json found in $PWD or its parents" >&2; exit 1; }
+    MLN_PLUGIN_ROOT="$directory"
+fi
+MLN_PLUGIN_ROOT="$(cd "$MLN_PLUGIN_ROOT" && pwd)"
+export MLN_PLUGIN_ROOT
+exec "$implementation" "$@"

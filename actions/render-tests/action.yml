@@ -1,0 +1,93 @@
+name: Plugin render tests
+description: >-
+  Builds MapLibre Native's render-test harness with the plugin linked in and runs the
+  plugin's render-test manifest. Use metal on macOS runners, opengl or vulkan on ubuntu-24.04.
+
+inputs:
+  backend:
+    description: metal, opengl or vulkan
+    required: true
+  plugin-root:
+    description: Plugin repository root, relative to the workspace
+    required: false
+    default: .
+  runner-arguments:
+    description: Extra arguments for MapLibre's render-test harness, for example --filter corners
+    required: false
+    default: --recycle-map
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve configuration
+      id: config
+      shell: bash
+      working-directory: ${{ inputs.plugin-root }}
+      env:
+        TOOLS: ${{ github.action_path }}/../..
+      run: |
+        tools="$(cd "$TOOLS" && pwd)"
+        echo "tools=$tools" >> "$GITHUB_OUTPUT"
+        echo "native-revision=$("$tools/bin/plugin" config versions.maplibreNative)" >> "$GITHUB_OUTPUT"
+        echo "plugin-id=$("$tools/bin/plugin" config id)" >> "$GITHUB_OUTPUT"
+        echo "render-tests=$("$tools/bin/plugin" config renderTests)" >> "$GITHUB_OUTPUT"
+        cache="$RUNNER_TEMP/maplibre-native-plugins"
+        echo "cache=$cache" >> "$GITHUB_OUTPUT"
+        echo "MLN_PLUGIN_TOOLS_CACHE=$cache" >> "$GITHUB_ENV"
+        echo "CCACHE_DIR=$RUNNER_TEMP/ccache" >> "$GITHUB_ENV"
+        echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
+        echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+
+    # The MapLibre Native checkout (about 1.6 GB with submodules) is fetched shallowly on every
+    # run; caching it would evict the far more useful compiler cache.
+    - name: Restore compiler cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/ccache
+        key: plugin-render-tests-ccache-${{ runner.os }}-${{ inputs.backend }}-${{ steps.config.outputs.native-revision }}-${{ github.run_id }}
+        restore-keys: |
+          plugin-render-tests-ccache-${{ runner.os }}-${{ inputs.backend }}-${{ steps.config.outputs.native-revision }}-
+          plugin-render-tests-ccache-${{ runner.os }}-${{ inputs.backend }}-
+
+    - name: Install macOS dependencies
+      if: runner.os == 'macOS'
+      shell: bash
+      run: brew install icu4c jpeg-turbo libpng libuv webp ninja ccache
+
+    - name: Build render-test runner
+      shell: bash
+      working-directory: ${{ inputs.plugin-root }}
+      env:
+        TOOLS: ${{ steps.config.outputs.tools }}
+        BACKEND: ${{ inputs.backend }}
+      run: |
+        if [[ $RUNNER_OS == Linux ]]; then
+          # The Linux dependency list lives in the MapLibre Native checkout.
+          native_source="$("$TOOLS/bin/plugin" render-tests --backend "$BACKEND" --fetch-only)"
+          bash "$native_source/.github/scripts/install-linux-deps"
+          sudo apt-get install -y ccache
+        fi
+        "$TOOLS/bin/plugin" render-tests --backend "$BACKEND" --build-only
+        ccache --show-stats || true
+
+    - name: Run render tests
+      shell: bash
+      working-directory: ${{ inputs.plugin-root }}
+      env:
+        TOOLS: ${{ steps.config.outputs.tools }}
+        BACKEND: ${{ inputs.backend }}
+        RUNNER_ARGUMENTS: ${{ inputs.runner-arguments }}
+      run: |
+        # shellcheck disable=SC2086 # word splitting of the extra arguments is intended
+        "$TOOLS/bin/plugin" render-tests --backend "$BACKEND" -- $RUNNER_ARGUMENTS
+
+    - name: Upload render-test diagnostics
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: render-tests-${{ steps.config.outputs.plugin-id }}-${{ inputs.backend }}
+        path: |
+          ${{ inputs.plugin-root }}/${{ steps.config.outputs.render-tests }}/**/*.html
+          ${{ inputs.plugin-root }}/${{ steps.config.outputs.render-tests }}/**/actual.png
+          ${{ inputs.plugin-root }}/${{ steps.config.outputs.render-tests }}/**/diff.png
+        if-no-files-found: ignore

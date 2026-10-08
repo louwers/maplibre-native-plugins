@@ -1,0 +1,151 @@
+#!/bin/bash
+# Summary: Build and run the plugin's render tests (--backend metal|opengl|vulkan)
+#
+# Usage: tools/bin/plugin render-tests [--backend metal|opengl|vulkan] [--native-source DIR]
+#                                      [--build-dir DIR] [--build-only | --fetch-only] [-- runner arguments]
+#
+# Without --native-source, MapLibre Native is fetched at versions.maplibreNative into
+# $MLN_PLUGIN_TOOLS_CACHE (default: ~/.cache/maplibre-native-plugins).
+# MLN_NATIVE_SOURCE also selects a checkout; --fetch-only prints its path. Runner arguments
+# go to MapLibre's harness, for example: -- --filter corners --update default
+set -euo pipefail
+
+usage() {
+    sed -n '4,10s/^# \{0,1\}//p' "$0" >&2
+    exit 2
+}
+
+case "$(uname -s)" in
+    Darwin) backend=metal ;;
+    *) backend=opengl ;;
+esac
+native_source="${MLN_NATIVE_SOURCE:-}"
+build_dir=""
+build_only=false
+fetch_only=false
+runner_arguments=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --backend) backend="${2:?--backend needs a value}"; shift 2 ;;
+        --backend=*) backend="${1#*=}"; shift ;;
+        --native-source) native_source="${2:?--native-source needs a path}"; shift 2 ;;
+        --native-source=*) native_source="${1#*=}"; shift ;;
+        --build-dir) build_dir="${2:?--build-dir needs a path}"; shift 2 ;;
+        --build-dir=*) build_dir="${1#*=}"; shift ;;
+        --build-only) build_only=true; shift ;;
+        --fetch-only) fetch_only=true; shift ;;
+        -h|--help) usage ;;
+        --) shift; runner_arguments=("$@"); break ;;
+        *) echo "Unknown argument: $1" >&2; usage ;;
+    esac
+done
+
+case "$backend" in
+    metal) cmake_backend=MLN_WITH_METAL ;;
+    opengl) cmake_backend=MLN_WITH_OPENGL ;;
+    vulkan) cmake_backend=MLN_WITH_VULKAN ;;
+    *) echo "Unsupported backend: $backend (use metal, opengl or vulkan)" >&2; exit 2 ;;
+esac
+if [[ $backend == metal && $(uname -s) != Darwin ]]; then
+    echo "The metal backend requires macOS" >&2
+    exit 2
+fi
+
+config() { python3 "$MLN_PLUGIN_TOOLS/lib/config.py" "$@"; }
+render_tests="$(config renderTests)"
+if [[ -z $render_tests || $render_tests == null ]]; then
+    echo "No render tests: add render-tests/manifest.json to the plugin" >&2
+    exit 1
+fi
+manifest="$MLN_PLUGIN_ROOT/$render_tests/manifest.json"
+
+# Fetches MapLibre Native at the pinned commit, with submodules, into the cache.
+fetch_native_source() {
+    local revision cache target staging
+    revision="$(config versions.maplibreNative)"
+    cache="${MLN_PLUGIN_TOOLS_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/maplibre-native-plugins}"
+    target="$cache/maplibre-native-$revision"
+    if [[ -f $target/.plugin-tools-complete ]]; then
+        echo "$target"
+        return
+    fi
+    echo "Fetching MapLibre Native $revision into $target" >&2
+    mkdir -p "$cache"
+    staging="$(mktemp -d "$cache/.maplibre-native-$revision.XXXXXX")"
+    (
+        cd "$staging"
+        git init -q
+        git remote add origin "${MLN_NATIVE_REPOSITORY:-https://github.com/maplibre/maplibre-native.git}"
+        git fetch -q --depth 1 origin "$revision"
+        git -c advice.detachedHead=false checkout -q FETCH_HEAD
+        # The Windows-only vcpkg checkout is large and unused here.
+        git -c submodule.platform/windows/vendor/vcpkg.update=none \
+            submodule update -q --init --recursive --depth 1 --jobs 8
+    ) >&2
+    touch "$staging/.plugin-tools-complete"
+    rm -rf "$target"
+    mv "$staging" "$target"
+    echo "$target"
+}
+
+if [[ -z $native_source ]]; then
+    native_source="$(fetch_native_source)"
+fi
+native_source="$(cd "$native_source" && pwd)"
+if $fetch_only; then
+    echo "$native_source"
+    exit 0
+fi
+build_dir="${build_dir:-$MLN_PLUGIN_ROOT/build/render-tests-$backend}"
+
+configure_arguments=(
+    -S "$MLN_PLUGIN_TOOLS/render-tests"
+    -B "$build_dir"
+    -G Ninja
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo
+    -DMLN_PLUGIN_ROOT="$MLN_PLUGIN_ROOT"
+    -DMAPLIBRE_NATIVE_SOURCE_DIR="$native_source"
+    "-D${cmake_backend}=ON"
+)
+if [[ $(uname -s) == Linux ]]; then
+    configure_arguments+=(
+        -DCMAKE_C_COMPILER=clang
+        -DCMAKE_CXX_COMPILER=clang++
+        -DMLN_WITH_X11=ON
+        -DMLN_WITH_WAYLAND=OFF
+    )
+fi
+if command -v ccache > /dev/null; then
+    configure_arguments+=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+fi
+
+cmake "${configure_arguments[@]}"
+cmake --build "$build_dir" --target plugin-render-tests
+if $build_only; then
+    echo "Built $build_dir/plugin-render-tests"
+    exit 0
+fi
+
+# MapLibre's harness requires the manifest's result_path to exist.
+results="$(python3 - "$manifest" <<'EOF'
+import json, os, sys
+manifest = sys.argv[1]
+result_path = json.load(open(manifest)).get("result_path")
+print(os.path.join(os.path.dirname(manifest), result_path) if result_path else "")
+EOF
+)"
+[[ -n $results ]] && mkdir -p "$results"
+
+# The runner defaults to the plugin's manifest; runner arguments may select another.
+runner=("$build_dir/plugin-render-tests")
+if [[ $(uname -s) == Linux && -z ${DISPLAY:-} ]] && command -v xvfb-run > /dev/null; then
+    runner=(xvfb-run -a "${runner[@]}")
+fi
+
+status=0
+# ${array[@]+...} keeps bash 3.2 (macOS) happy with an empty array under set -u.
+"${runner[@]}" ${runner_arguments[@]+"${runner_arguments[@]}"} || status=$?
+echo
+echo "Render-test results: ${results:-see the harness output above}"
+echo "Failing cases write actual.png and diff.png next to their expected images in $MLN_PLUGIN_ROOT/$render_tests."
+exit "$status"

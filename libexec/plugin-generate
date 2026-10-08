@@ -1,0 +1,4 @@
+#!/bin/bash
+# Summary: Generate Package.swift and the Objective-C wrapper in apple/ (--check verifies them)
+set -euo pipefail
+exec python3 "$MLN_PLUGIN_TOOLS/lib/apple.py" "$@"

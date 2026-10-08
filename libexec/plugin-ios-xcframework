@@ -1,0 +1,99 @@
+#!/bin/bash
+# Summary: Build the plugin as a static XCFramework zip for iOS devices and simulators
+#
+# Usage: tools/bin/plugin ios-xcframework [--output DIR]
+#
+# Writes DIR/<Product>-<version>.xcframework.zip (default DIR: build/outputs). The framework
+# contains only the plugin: mln_plugin_register_v1 stays undefined and resolves against the
+# MapLibre product of the plugin-enabled MapLibre iOS package when the application links.
+set -euo pipefail
+
+output="$MLN_PLUGIN_ROOT/build/outputs"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --output) output="$2"; shift 2 ;;
+        *) echo "Usage: tools/bin/plugin ios-xcframework [--output DIR]" >&2; exit 2 ;;
+    esac
+done
+mkdir -p "$output"
+output="$(cd "$output" && pwd)"
+
+config() { python3 "$MLN_PLUGIN_TOOLS/lib/config.py" "$1"; }
+plugin_id="$(config id)"
+version="$(config version)"
+product="$(config apple.product)"
+registration_class="$(config apple.className)"
+minimum_os="$(config versions.iosDeploymentTarget)"
+
+# The XCFramework is built from the committed Swift package, so it must be current.
+"$MLN_PLUGIN_TOOLS/bin/plugin" generate --check
+
+work="$MLN_PLUGIN_ROOT/build/ios-xcframework"
+rm -rf "$work"
+mkdir -p "$work"
+
+frameworks=()
+for platform in iphoneos iphonesimulator; do
+    if [[ $platform == iphoneos ]]; then
+        destination="generic/platform=iOS"
+        archs="arm64"
+    else
+        destination="generic/platform=iOS Simulator"
+        archs="arm64 x86_64"
+    fi
+
+    echo "Building $product for $platform ($archs)"
+    (cd "$MLN_PLUGIN_ROOT" && xcodebuild build \
+        -quiet \
+        -scheme "$product" \
+        -destination "$destination" \
+        -configuration Release \
+        -derivedDataPath "$work/DerivedData" \
+        ARCHS="$archs" \
+        ONLY_ACTIVE_ARCH=NO \
+        CODE_SIGNING_ALLOWED=NO)
+
+    # Xcode links a Swift package library target into one relocatable object.
+    object="$work/DerivedData/Build/Products/Release-$platform/$product.o"
+    framework="$work/$platform/$product.framework"
+    mkdir -p "$framework/Headers" "$framework/Modules"
+    libtool -static -o "$framework/$product" "$object"
+    cp "$MLN_PLUGIN_ROOT/apple/include/$product/"*.h "$framework/Headers/"
+    # Autolink the plugin's runtime dependencies for applications that import the module.
+    cat > "$framework/Modules/module.modulemap" <<MODULEMAP
+framework module $product {
+    umbrella header "$product.h"
+    export *
+    module * { export * }
+    link "c++"
+    link framework "Foundation"
+}
+MODULEMAP
+    plutil -create xml1 "$framework/Info.plist"
+    plutil -insert CFBundleExecutable -string "$product" "$framework/Info.plist"
+    plutil -insert CFBundleIdentifier -string "org.maplibre.plugins.$plugin_id" "$framework/Info.plist"
+    plutil -insert CFBundleName -string "$product" "$framework/Info.plist"
+    plutil -insert CFBundlePackageType -string FMWK "$framework/Info.plist"
+    plutil -insert CFBundleShortVersionString -string "${version%%-*}" "$framework/Info.plist"
+    plutil -insert CFBundleVersion -string "$version" "$framework/Info.plist"
+    plutil -insert MinimumOSVersion -string "$minimum_os" "$framework/Info.plist"
+
+    for arch in $archs; do
+        symbols="$(nm -arch "$arch" "$framework/$product")"
+        grep -q " [ST] _OBJC_CLASS_\$_$registration_class$" <<< "$symbols" ||
+            { echo "$platform $arch: missing $registration_class" >&2; exit 1; }
+        grep -q " U _mln_plugin_register_v1$" <<< "$symbols" ||
+            { echo "$platform $arch: expected an undefined mln_plugin_register_v1" >&2; exit 1; }
+        if grep -q " [TD] _mln_plugin_register_v1$" <<< "$symbols"; then
+            echo "$platform $arch: the plugin must not contain the MapLibre host" >&2
+            exit 1
+        fi
+    done
+    frameworks+=(-framework "$framework")
+done
+
+xcodebuild -create-xcframework "${frameworks[@]}" -output "$work/$product.xcframework" > /dev/null
+archive="$output/$product-$version.xcframework.zip"
+rm -f "$archive"
+(cd "$work" && ditto -c -k --norsrc --noextattr --keepParent "$product.xcframework" "$archive")
+echo "$archive"

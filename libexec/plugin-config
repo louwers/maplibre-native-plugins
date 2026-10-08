@@ -1,0 +1,4 @@
+#!/bin/bash
+# Summary: Print the resolved plugin configuration, or one value (for example apple.product)
+set -euo pipefail
+exec python3 "$MLN_PLUGIN_TOOLS/lib/config.py" "$@"

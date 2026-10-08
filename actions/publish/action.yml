@@ -1,0 +1,41 @@
+name: Publish plugin release
+description: Creates the GitHub release for the version in plugin.json and uploads the built assets with SHA-256 checksums.
+
+inputs:
+  assets:
+    description: Directory with the built release assets
+    required: true
+  token:
+    description: Token with contents write permission
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Publish release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        ASSETS: ${{ inputs.assets }}
+        TOOLS: ${{ github.action_path }}/../..
+      run: |
+        version="$("$TOOLS/bin/plugin" config version)"
+        name="$("$TOOLS/bin/plugin" config displayName)"
+        if gh release view "$version" > /dev/null 2>&1; then
+          echo "::error::Release $version already exists. Bump version in plugin.json, run tools/bin/plugin generate, and commit."
+          exit 1
+        fi
+        # Every built asset must carry the released version.
+        shopt -s nullglob
+        files=("$ASSETS"/*)
+        [[ ${#files[@]} -gt 0 ]] || { echo "::error::No assets in $ASSETS"; exit 1; }
+        for file in "${files[@]}"; do
+          [[ $(basename "$file") == *"-$version."* ]] || { echo "::error::$file does not match version $version"; exit 1; }
+        done
+        (cd "$ASSETS" && for file in *; do [[ $file == *.sha256 ]] || shasum -a 256 "$file" > "$file.sha256"; done)
+        gh release create "$version" "$ASSETS"/* \
+          --target "$GITHUB_SHA" \
+          --title "$name $version" \
+          --generate-notes \
+          $([[ $version == *-* ]] && echo --prerelease)

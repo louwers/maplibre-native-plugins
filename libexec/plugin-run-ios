@@ -1,0 +1,120 @@
+#!/bin/bash
+# Summary: Build and launch an iOS demo app that registers the plugin, in a simulator
+#
+# Usage: tools/bin/plugin run-ios [--simulator UDID] [--screenshot FILE] [--timeout SECONDS] [--headless]
+#
+# Generates build/ios-demo/PluginDemo.xcodeproj. The app links the plugin from this repository
+# (as a local Swift package) and the plugin-enabled MapLibre framework, registers the plugin and
+# shows plugin.json's demo.style at demo.camera. Without --screenshot it streams the app's
+# console until interrupted. With --screenshot it waits until the map has rendered (or the
+# timeout passes), saves a screenshot and exits; it fails if registration or style loading fails.
+set -euo pipefail
+
+usage() {
+    echo "Usage: tools/bin/plugin run-ios [--simulator UDID] [--screenshot FILE] [--timeout SECONDS] [--headless]" >&2
+    exit 2
+}
+
+simulator=""
+screenshot=""
+timeout=60
+headless="${CI:+1}"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --simulator) [[ $# -ge 2 ]] || usage; simulator="$2"; shift 2 ;;
+        --screenshot) [[ $# -ge 2 ]] || usage; screenshot="$2"; shift 2 ;;
+        --timeout) [[ $# -ge 2 ]] || usage; timeout="$2"; shift 2 ;;
+        --headless) headless=1; shift ;;
+        *) usage ;;
+    esac
+done
+if [[ -n $screenshot ]]; then
+    mkdir -p "$(dirname "$screenshot")"
+    screenshot="$(cd "$(dirname "$screenshot")" && pwd)/$(basename "$screenshot")"
+fi
+
+config() { python3 "$MLN_PLUGIN_TOOLS/lib/config.py" "$1"; }
+plugin_id="$(config id)"
+product="$(config apple.product)"
+bundle_id="org.maplibre.plugins.demo.$(tr -d '-' <<< "$plugin_id")"
+
+# The app builds the plugin from the committed Swift package, so it must be current.
+"$MLN_PLUGIN_TOOLS/bin/plugin" generate --check
+
+demo="$MLN_PLUGIN_ROOT/build/ios-demo"
+rm -rf "$demo/App" "$demo/Demo" "$demo/PluginDemo.xcodeproj"
+mkdir -p "$demo/App" "$demo/Demo"
+python3 "$MLN_PLUGIN_TOOLS/lib/ios_demo.py" "$demo"
+
+if ! ruby -e "require 'xcodeproj'" 2> /dev/null; then
+    echo "Installing the xcodeproj Ruby gem for the current user"
+    gem install --user-install --no-document xcodeproj > /dev/null
+fi
+MLN_DEMO_PLUGIN_ROOT="$MLN_PLUGIN_ROOT" \
+MLN_DEMO_PRODUCT="$product" \
+MLN_DEMO_BUNDLE_ID="$bundle_id" \
+MLN_DEMO_DEPLOYMENT_TARGET="$(config versions.iosDeploymentTarget)" \
+MLN_DEMO_DISPLAY_NAME="$(config displayName)" \
+MLN_DEMO_MAPLIBRE_PACKAGE="$(config versions.maplibreIosPackage)" \
+MLN_DEMO_MAPLIBRE_VERSION="$(config versions.maplibreIos)" \
+    ruby "$MLN_PLUGIN_TOOLS/ios/demo/generate-project.rb" "$demo"
+
+if [[ -z $simulator ]]; then
+    # Prefer a booted iPhone, otherwise the first iPhone of the newest iOS runtime.
+    simulator="$(xcrun simctl list devices available --json | python3 -c '
+import json, re, sys
+devices = []
+for runtime, entries in json.load(sys.stdin)["devices"].items():
+    match = re.search(r"iOS-(\d+)-(\d+)", runtime)
+    if not match:
+        continue
+    for device in entries:
+        if device["name"].startswith("iPhone"):
+            devices.append((device["state"] == "Booted", int(match[1]), int(match[2]), device["udid"]))
+print(max(devices)[3] if devices else "")
+')"
+    [[ -n $simulator ]] || { echo "No available iPhone simulator. Create one in Xcode." >&2; exit 1; }
+fi
+
+echo "Building the demo app for simulator $simulator"
+xcodebuild build \
+    -quiet \
+    -project "$demo/PluginDemo.xcodeproj" \
+    -scheme PluginDemo \
+    -configuration Debug \
+    -destination "platform=iOS Simulator,id=$simulator" \
+    -derivedDataPath "$demo/DerivedData" \
+    CODE_SIGNING_ALLOWED=NO
+app="$demo/DerivedData/Build/Products/Debug-iphonesimulator/PluginDemo.app"
+
+xcrun simctl boot "$simulator" 2> /dev/null || true
+xcrun simctl bootstatus "$simulator" -b > /dev/null
+[[ -n $headless ]] || open -a Simulator --args -CurrentDeviceUDID "$simulator"
+xcrun simctl install "$simulator" "$app"
+
+if [[ -z $screenshot ]]; then
+    echo "Launching $bundle_id; press Ctrl-C to stop following its console"
+    exec xcrun simctl launch --console-pty --terminate-running-process "$simulator" "$bundle_id"
+fi
+
+log="$demo/launch.log"
+xcrun simctl launch --console-pty --terminate-running-process "$simulator" "$bundle_id" > "$log" 2>&1 &
+console=$!
+trap 'kill "$console" 2> /dev/null || true' EXIT
+status=0
+for ((second = 0; second < timeout; second++)); do
+    if grep -aq "MLN_PLUGIN_DEMO_FAILED" "$log"; then
+        grep -a "MLN_PLUGIN_DEMO_FAILED" "$log" >&2
+        status=1
+        break
+    fi
+    grep -aq "MLN_PLUGIN_DEMO_RENDERED" "$log" && break
+    sleep 1
+done
+if ((second == timeout)); then
+    echo "warning: the map did not finish rendering within ${timeout}s" >&2
+fi
+sleep 1
+xcrun simctl io "$simulator" screenshot "$screenshot" > /dev/null 2>&1
+echo "Screenshot: $screenshot"
+exit "$status"

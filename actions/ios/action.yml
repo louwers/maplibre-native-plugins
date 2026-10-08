@@ -1,0 +1,46 @@
+name: Build iOS plugin
+description: >
+  Checks that the generated Swift package is current and builds the plugin as a static
+  XCFramework zip. Run on a macOS runner from the root of a plugin repository checked out
+  with submodules.
+inputs:
+  output:
+    description: Directory that receives <Product>-<version>.xcframework.zip
+    required: false
+    default: release-assets
+  xcode-version:
+    description: Xcode to select, for example 16.4 (default is the runner's default Xcode)
+    required: false
+    default: ''
+  demo-screenshot:
+    description: >
+      When set, also builds and launches the demo app in a simulator and saves a screenshot to
+      this path. Fails if the plugin does not register or the demo style does not load.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Select Xcode
+      if: inputs.xcode-version != ''
+      shell: bash
+      env:
+        XCODE_VERSION: ${{ inputs.xcode-version }}
+      run: sudo xcode-select --switch "/Applications/Xcode_$XCODE_VERSION.app"
+
+    - name: Check generated Swift package
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/../../bin/plugin" generate --check'
+
+    - name: Build XCFramework
+      shell: bash
+      env:
+        OUTPUT: ${{ inputs.output }}
+      run: '"$GITHUB_ACTION_PATH/../../bin/plugin" ios-xcframework --output "$OUTPUT"'
+
+    - name: Run demo app
+      if: inputs.demo-screenshot != ''
+      shell: bash
+      env:
+        SCREENSHOT: ${{ inputs.demo-screenshot }}
+      run: '"$GITHUB_ACTION_PATH/../../bin/plugin" run-ios --headless --screenshot "$SCREENSHOT"'

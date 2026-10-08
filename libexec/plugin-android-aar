@@ -1,0 +1,28 @@
+#!/bin/bash
+# Summary: Build the plugin's Android library (AAR) into an output directory
+set -euo pipefail
+source "$MLN_PLUGIN_TOOLS/lib/android.sh"
+
+usage() {
+    echo "Usage: tools/bin/plugin android-aar [--output DIR] [--abis arm64-v8a,x86_64]" >&2
+    exit 2
+}
+output="$MLN_PLUGIN_ROOT/build/outputs"
+abis=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --output) [[ $# -ge 2 ]] || usage; output="$2"; shift 2 ;;
+        --abis) [[ $# -ge 2 ]] || usage; abis=(-PmaplibrePluginAbis="$2"); shift 2 ;;
+        *) usage ;;
+    esac
+done
+
+id="$(plugin_config id)"
+version="$(plugin_config version)"
+artifact="$(plugin_config android.artifactId)"
+plugin_gradle :assembleRelease "${abis[@]+"${abis[@]}"}"
+
+mkdir -p "$output"
+destination="$(cd "$output" && pwd)/$artifact-$version.aar"
+cp "$MLN_PLUGIN_ROOT/build/outputs/aar/$id-release.aar" "$destination"
+echo "$destination"

@@ -1,0 +1,10 @@
+{
+  "maplibreAndroid": "13.6.1-pre935d410353da9d701ad42c97f2e0c300c8d408b8",
+  "maplibreIos": "7.0.0-pre1",
+  "maplibreIosPackage": "https://github.com/louwers/maplibre-ios-with-plugin-api",
+  "maplibreNative": "cf5ad032bf70c3e6c19d50bef3fc92a05b45ebc2",
+  "iosDeploymentTarget": "15.5",
+  "androidMinSdk": 23,
+  "androidCompileSdk": 35,
+  "androidNdk": "28.2.13676358"
+}

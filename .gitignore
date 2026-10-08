@@ -1,0 +1,5 @@
+# Gradle state of the included convention-plugin build.
+/gradle/.gradle/
+/gradle/.kotlin/
+/gradle/build/
+/lib/__pycache__/

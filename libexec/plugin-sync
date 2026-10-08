@@ -1,0 +1,61 @@
+#!/bin/bash
+# Summary: Install or refresh tool-owned files (workflows, Gradle boilerplate), then run generate
+# Usage: tools/bin/plugin sync [--check]
+#
+# Run it after updating the tools submodule. With --check it changes nothing and fails if a
+# tool-owned file differs from this version of the tools.
+set -euo pipefail
+
+check=false
+case "${1:-}" in
+    "") ;;
+    --check) check=true ;;
+    *) echo "Usage: tools/bin/plugin sync [--check]" >&2; exit 2 ;;
+esac
+
+templates="$MLN_PLUGIN_TOOLS/templates"
+root="$MLN_PLUGIN_ROOT"
+stale=()
+
+# managed <template> <destination>: the destination always matches the template.
+managed() {
+    local source="$templates/$1" destination="$root/$2"
+    [[ -f $source ]] || return 0
+    if [[ -f $destination ]] && cmp -s "$source" "$destination"; then
+        return
+    fi
+    stale+=("$2")
+    if ! $check; then
+        mkdir -p "$(dirname "$destination")"
+        cp "$source" "$destination"
+    fi
+}
+
+# initial <template> <destination>: created once, then owned by the plugin.
+initial() {
+    local source="$templates/$1" destination="$root/$2"
+    if [[ ! -e $destination ]] && ! $check; then
+        mkdir -p "$(dirname "$destination")"
+        cp "$source" "$destination"
+        echo "Created $2"
+    fi
+}
+
+managed workflows/ci.yml .github/workflows/ci.yml
+managed workflows/release.yml .github/workflows/release.yml
+managed android/settings.gradle.kts settings.gradle.kts
+managed android/build.gradle.kts build.gradle.kts
+initial common/gitignore .gitignore
+
+if $check; then
+    if [[ ${#stale[@]} -gt 0 ]]; then
+        printf 'Out of date with the tools (run tools/bin/plugin sync):\n' >&2
+        printf '  %s\n' "${stale[@]}" >&2
+        exit 1
+    fi
+    exec "$MLN_PLUGIN_TOOLS/bin/plugin" generate --check
+fi
+for file in ${stale[@]+"${stale[@]}"}; do
+    echo "Updated $file"
+done
+exec "$MLN_PLUGIN_TOOLS/bin/plugin" generate

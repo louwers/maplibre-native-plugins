@@ -1,0 +1,60 @@
+#!/bin/bash
+# Summary: Build the demo app with the plugin, launch it on a device or emulator
+set -euo pipefail
+source "$MLN_PLUGIN_TOOLS/lib/android.sh"
+
+usage() {
+    echo "Usage: tools/bin/plugin run-android [--renderer opengl|vulkan] [--screenshot FILE] [--timeout SECONDS]" >&2
+    echo "Needs exactly one connected device or running emulator (or ANDROID_SERIAL)." >&2
+    exit 2
+}
+renderer=opengl
+screenshot=
+timeout=90
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --renderer) [[ $# -ge 2 ]] || usage; renderer="$2"; shift 2 ;;
+        --screenshot) [[ $# -ge 2 ]] || usage; screenshot="$2"; shift 2 ;;
+        --timeout) [[ $# -ge 2 ]] || usage; timeout="$2"; shift 2 ;;
+        *) usage ;;
+    esac
+done
+[[ $renderer == opengl || $renderer == vulkan ]] || usage
+
+if [[ "$(adb_command get-state 2>/dev/null)" != device ]]; then
+    echo "No Android device found. Start an emulator, for example: \$ANDROID_HOME/emulator/emulator -avd <name>" >&2
+    exit 1
+fi
+
+# Build only the device's ABI to keep the native build fast.
+abi="$(adb_command shell getprop ro.product.cpu.abi | tr -d '\r')"
+flavor="$(tr '[:lower:]' '[:upper:]' <<< "${renderer:0:1}")${renderer:1}"
+plugin_gradle ":demo:install${flavor}Debug" -PmaplibrePluginAbis="$abi"
+
+package="org.maplibre.plugins.demo.$(plugin_config id | tr -d -).$renderer"
+adb_command logcat -c
+adb_command shell am start -S -W -n "$package/org.maplibre.plugins.demo.DemoActivity" > /dev/null
+echo "Launched $package ($renderer, $abi)"
+
+# Wait until the map is idle (rendered) or the demo reports an error.
+deadline=$((SECONDS + timeout))
+status=timeout
+while ((SECONDS < deadline)); do
+    log="$(adb_command logcat -d -s MapLibrePluginDemo:V AndroidRuntime:E)"
+    if grep -q " E MapLibrePluginDemo\|FATAL EXCEPTION" <<< "$log"; then status=error; break; fi
+    if grep -q "Map idle" <<< "$log"; then status=idle; break; fi
+    sleep 1
+done
+adb_command logcat -d -s MapLibrePluginDemo:V AndroidRuntime:E | grep -v "^---------" || true
+
+if [[ -n $screenshot ]]; then
+    sleep 2
+    mkdir -p "$(dirname "$screenshot")"
+    adb_command exec-out screencap -p > "$screenshot"
+    echo "Screenshot: $screenshot"
+fi
+case "$status" in
+    idle) echo "Map rendered" ;;
+    error) echo "The demo reported an error" >&2; exit 1 ;;
+    *) echo "Timed out after ${timeout}s waiting for the map to render" >&2; exit 1 ;;
+esac

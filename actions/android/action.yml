@@ -1,0 +1,40 @@
+name: Build Android plugin AAR
+description: Sets up the Android toolchain and builds the plugin's AAR with maplibre-native-plugins.
+
+inputs:
+  output:
+    description: Directory that receives <artifactId>-<version>.aar
+    required: false
+    default: release-assets
+
+outputs:
+  aar:
+    description: Path of the built AAR
+    value: ${{ steps.build.outputs.aar }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 17
+
+    - uses: android-actions/setup-android@v4
+
+    - name: Install NDK and CMake
+      shell: bash
+      run: |
+        ndk="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["androidNdk"])' "$GITHUB_ACTION_PATH/../../versions.json")"
+        sdkmanager "ndk;$ndk" "cmake;3.22.1"
+
+    - uses: gradle/actions/setup-gradle@v4
+
+    - name: Build AAR
+      id: build
+      shell: bash
+      env:
+        OUTPUT: ${{ inputs.output }}
+      run: |
+        aar="$("$GITHUB_ACTION_PATH/../../bin/plugin" android-aar --output "$OUTPUT" | tail -1)"
+        echo "aar=$aar" >> "$GITHUB_OUTPUT"
